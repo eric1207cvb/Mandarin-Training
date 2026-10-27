@@ -17,7 +17,7 @@ class SpeechManager: NSObject, AVSpeechSynthesizerDelegate, ObservableObject {
     }
     
     /// 依教育部注音朗讀。對得上音節才使用國際音標，否則退回系統猜音。
-    func speak(word: String, phonetic: String, rate: Float = AVSpeechUtteranceDefaultSpeechRate) {
+    func speak(word: String, phonetic: String, rate: Float = 0.38) {
         let plain = MOEText.plain(word)
         guard !plain.isEmpty else { return }
         if let attributed = BopomofoPronunciation.attributedString(word: plain, phonetic: phonetic) {
@@ -29,8 +29,8 @@ class SpeechManager: NSObject, AVSpeechSynthesizerDelegate, ObservableObject {
 
     /// 朗讀文字
     /// - Parameter text: 要朗讀的文字
-    /// - Parameter rate: 語速 (0.0 ~ 1.0)，預設 0.45
-    func speak(_ text: String, rate: Float = AVSpeechUtteranceDefaultSpeechRate) {
+    /// - Parameter rate: 語速 (0.0 ~ 1.0)，預設 0.38，供中文學習者清楚聽辨
+    func speak(_ text: String, rate: Float = 0.38) {
         speak(NSAttributedString(string: text), rate: rate)
     }
 
@@ -69,6 +69,8 @@ class SpeechManager: NSObject, AVSpeechSynthesizerDelegate, ObservableObject {
         
         // 4. 設定參數
         utterance.rate = rate
+        utterance.preUtteranceDelay = 0.05
+        utterance.postUtteranceDelay = 0.18
         utterance.pitchMultiplier = 1.0
         utterance.volume = 1.0 // 確保最大音量
         

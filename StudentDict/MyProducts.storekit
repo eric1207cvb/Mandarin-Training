@@ -25,7 +25,7 @@
           "locale" : "zh_Hant"
         }
       ],
-      "productID" : "remove_ads",
+      "productID" : "remove_ads_once",
       "referenceName" : "Remove Ads",
       "type" : "NonConsumable"
     }

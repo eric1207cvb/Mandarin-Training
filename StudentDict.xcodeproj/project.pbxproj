@@ -33,7 +33,7 @@
 		4C2F7F192EF4F0AA003DA197 /* StudentDict.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StudentDict.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4C2F7F262EF4F0AC003DA197 /* StudentDictTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = StudentDictTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		4C2F7F302EF4F0AC003DA197 /* StudentDictUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = StudentDictUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		4CEDCB15EF8EDF0001C1C69 /* Secrets.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Secrets.xcconfig; sourceTree = "<group>"; };
+		4CEDCB15EF8EDF0001C1C69 /* Config/Secrets.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Secrets.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -100,7 +100,7 @@
 		4C2F7F102EF4F0AA003DA197 = {
 			isa = PBXGroup;
 			children = (
-				4CEDCB15EF8EDF0001C1C69 /* Secrets.xcconfig */,
+				4CEDCB15EF8EDF0001C1C69 /* Config/Secrets.xcconfig */,
 				4C2F7F1B2EF4F0AA003DA197 /* StudentDict */,
 				4C2F7F292EF4F0AC003DA197 /* StudentDictTests */,
 				4C2F7F332EF4F0AC003DA197 /* StudentDictUITests */,
@@ -312,7 +312,7 @@
 /* Begin XCBuildConfiguration section */
 		4C2F7F382EF4F0AC003DA197 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 4CEDCB15EF8EDF0001C1C69 /* Secrets.xcconfig */;
+			baseConfigurationReference = 4CEDCB15EF8EDF0001C1C69 /* Config/Secrets.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -377,7 +377,7 @@
 		};
 		4C2F7F392EF4F0AC003DA197 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 4CEDCB15EF8EDF0001C1C69 /* Secrets.xcconfig */;
+			baseConfigurationReference = 4CEDCB15EF8EDF0001C1C69 /* Config/Secrets.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;

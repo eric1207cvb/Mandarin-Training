@@ -267,9 +267,8 @@ struct ContentView: View {
                             VStack(spacing: 0) {
                                 if !purchaseManager.isPremium {
                                     AdBannerView(isLoaded: $adLoaded)
-                                        .frame(height: adLoaded ? (isPad ? 90 : 50) : 0)
+                                        .frame(height: isPad ? 90 : 50)
                                         .frame(maxWidth: .infinity)
-                                        .clipped()
                                         .background(Color(UIColor.systemGray6))
                                 }
                                 if showCustomKeyboard {
@@ -1264,6 +1263,7 @@ struct AdBannerView: UIViewRepresentable {
         }
 
         func bannerView(_ bannerView: BannerView, didFailToReceiveAdWithError error: Error) {
+            print("⚠️ AdMob 橫幅載入失敗: \(error.localizedDescription)")
             DispatchQueue.main.async { self.isLoaded = false }
         }
     }

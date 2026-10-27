@@ -59,7 +59,7 @@ struct PaywallView: View {
                         .padding(.horizontal)
                         .padding(.top, 8)
                     } else if didLoad {
-                        Text("尚未讀到商品。請確認 RevenueCat 的方案已設為 Current，且包含 remove_ads。")
+                        Text("尚未讀到商品。請確認 RevenueCat 的 Current 方案包含 remove_ads_once，且 App Store Connect 商品資料已完成。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
