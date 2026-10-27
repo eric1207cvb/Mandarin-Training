@@ -1,0 +1,19 @@
+.DS_Store
+Thumbs.db
+
+# Xcode user-specific state
+**/xcuserdata/
+**/*.xcuserstate
+**/xcdebugger/
+
+# Build artifacts
+DerivedData/
+build/
+*.xcresult
+
+# Local Python caches
+__pycache__/
+*.py[cod]
+
+# Local secrets (copy the example before building locally)
+Config/Secrets.xcconfig
