@@ -77,9 +77,13 @@ struct PaywallView: View {
                     VStack(spacing: 6) {
                         Text("此為一次性購買。退款請聯繫 Apple 支援。")
                         HStack(spacing: 12) {
-                            Link("隱私權政策", destination: URL(string: "https://eric1207cvb.github.io/Mandarin-Training/")!)
+                            SafariLink(url: URL(string: "https://eric1207cvb.github.io/Mandarin-Training/")!) {
+                                Text("隱私權政策")
+                            }
                             Text("|").foregroundStyle(.tertiary)
-                            Link("使用條款", destination: URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!)
+                            SafariLink(url: URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!) {
+                                Text("使用條款")
+                            }
                         }
                     }
                     .font(.caption2)

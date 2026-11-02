@@ -1,4 +1,5 @@
 import SwiftUI
+import SafariServices
 import Speech
 import AVFoundation
 import GoogleMobileAds // AdMob
@@ -1266,7 +1267,7 @@ struct LicenseView: View {
                     Divider()
                     VStack(alignment: .leading, spacing: 12) {
                         Text("法律與條款").font(.headline)
-                        Link(destination: privacyURL) {
+                        SafariLink(url: privacyURL) {
                             HStack {
                                 Label("隱私權政策 (Privacy Policy)", systemImage: "hand.raised.fill").foregroundColor(.blue)
                                 Spacer()
@@ -1274,7 +1275,7 @@ struct LicenseView: View {
                             }
                             .padding().background(Color.blue.opacity(0.05)).cornerRadius(10)
                         }
-                        Link(destination: eulaURL) {
+                        SafariLink(url: eulaURL) {
                             HStack {
                                 Label("使用者授權合約 (EULA)", systemImage: "doc.text.fill").foregroundColor(.primary)
                                 Spacer()
@@ -1522,9 +1523,13 @@ struct ZhuyinKeyboardView: View {
                 
                 // 4. 隱私權與 EULA (避免被 Home Indicator 遮擋)
                 HStack(spacing: 16) {
-                    Link("隱私權政策", destination: URL(string: "https://eric1207cvb.github.io/Mandarin-Training/")!)
+                    SafariLink(url: URL(string: "https://eric1207cvb.github.io/Mandarin-Training/")!) {
+                        Text("隱私權政策")
+                    }
                     Text("|").foregroundColor(.gray.opacity(0.5))
-                    Link("使用者授權合約 (EULA)", destination: URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!)
+                    SafariLink(url: URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!) {
+                        Text("使用者授權合約 (EULA)")
+                    }
                 }
                 .font(.caption2)
                 .foregroundColor(.gray)
@@ -1671,6 +1676,56 @@ struct AdBannerView: UIViewRepresentable {
         func bannerView(_ bannerView: BannerView, didFailToReceiveAdWithError error: Error) {
             print("⚠️ AdMob 橫幅載入失敗: \(error.localizedDescription)")
             DispatchQueue.main.async { self.isLoaded = false }
+        }
+    }
+}
+
+/// 在 App 內開網頁。左上角「完成」會關掉網頁，回到原本的畫面。
+struct SafariView: UIViewControllerRepresentable {
+    let url: URL
+    @Environment(\.dismiss) private var dismiss
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        let safari = SFSafariViewController(url: url)
+        safari.dismissButtonStyle = .done
+        safari.delegate = context.coordinator
+        return safari
+    }
+
+    func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(dismiss: dismiss)
+    }
+
+    final class Coordinator: NSObject, SFSafariViewControllerDelegate {
+        private let dismiss: DismissAction
+
+        init(dismiss: DismissAction) {
+            self.dismiss = dismiss
+        }
+
+        func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
+            dismiss()
+        }
+    }
+}
+
+struct SafariLink<Label: View>: View {
+    let url: URL
+    @ViewBuilder var label: () -> Label
+    @State private var showPage = false
+
+    var body: some View {
+        Button {
+            showPage = true
+        } label: {
+            label()
+        }
+        .buttonStyle(.plain)
+        .sheet(isPresented: $showPage) {
+            SafariView(url: url)
+                .ignoresSafeArea()
         }
     }
 }
