@@ -180,6 +180,9 @@ struct ContentView: View {
     @State private var bookFrost: Double = 0
     @State private var canvasSize: CGSize = .zero
     @State private var browseHeight: CGFloat = 0
+    @State private var historyListHeight: CGFloat = 0
+    @State private var trailingOcclusion: CGFloat = 0
+    @State private var sawDuoHinge = false
     @State private var spreadPath: [DictItem] = []
     
     private var usesSpread: Bool {
@@ -198,10 +201,39 @@ struct ContentView: View {
 
     /// 展開後左頁要同時放下標題、至少一張詞卡、廣告和鍵盤，鍵盤改依剩餘高度縮短。
     private var spreadKeyboardHeight: CGFloat {
-        let adHeight: CGFloat = purchaseManager.isPremium ? 0 : 50
-        let room = browseHeight - 156 - adHeight - 148
-        guard browseHeight > 0 else { return 260 }
-        return min(300, max(220, room))
+        fittedKeyboardHeight(reserveForCard: 148, limit: 300)
+    }
+
+    /// 折疊後的單頁沿用同一套鍵盤，並留出廣告高度。
+    private var singlePageKeyboardHeight: CGFloat {
+        fittedKeyboardHeight(reserveForCard: 176, limit: 340)
+    }
+
+    private func fittedKeyboardHeight(reserveForCard: CGFloat, limit: CGFloat) -> CGFloat {
+        let adHeight: CGFloat = purchaseManager.isPremium ? 0 : 56
+        let natural = 248 + adHeight
+        guard browseHeight > 0 else { return min(limit, natural) }
+        let room = browseHeight - reserveForCard
+        return min(limit, max(240, min(natural, room)))
+    }
+
+    /// 封面的直向相機欄，或鉸鏈已經闔上。單頁仍把廣告放在鍵盤和授權連結中間，跟展開的左頁同一處。
+    private var duoSinglePage: Bool {
+        guard !usesSpread else { return false }
+        let coverWidth = horizontalSizeClass == .compact && sawDuoHinge
+        return hingePhase == .closed || trailingOcclusion >= 64 || coverWidth
+    }
+
+    private func noteBrowseLayout(_ proxy: GeometryProxy) {
+        browseHeight = proxy.size.height
+        guard #available(iOS 27.1, *) else { return }
+        let span = proxy.reservedRegions(kind: .occlusion)
+            .filter { $0.isActive }
+            .map { min($0.frame.width, $0.frame.height) }
+            .max() ?? 0
+        if abs(span - trailingOcclusion) > 1 {
+            trailingOcclusion = span
+        }
     }
     
     var body: some View {
@@ -310,6 +342,16 @@ struct ContentView: View {
                         .padding(.vertical, 8)
                     }
                 }
+            } else if historyFlowsAcrossSpread {
+                if !rightHistoryItems.isEmpty {
+                    HistoryListView(
+                        items: rightHistoryItems,
+                        showsHeader: false,
+                        singleColumn: true,
+                        onClear: {},
+                        onSelect: selectEntry
+                    )
+                }
             } else if !historyItems.isEmpty {
                 HistoryListView(
                     items: historyItems,
@@ -333,7 +375,32 @@ struct ContentView: View {
         spreadPath = [item]
     }
 
+    /// 鍵盤收起、尚未打開詞條時，最近查詢從左頁接到右頁，同一筆不重複。
+    private var historyFlowsAcrossSpread: Bool {
+        usesSpread && !showCustomKeyboard && searchText.isEmpty && selectedTab == 0 && spreadPath.isEmpty && !historyItems.isEmpty
+    }
+
+    private var historyColumnCapacity: Int {
+        let rowHeight: CGFloat = 136
+        let available = historyListHeight - 48
+        guard available >= rowHeight * 0.7 else { return max(historyItems.count, 1) }
+        return max(1, Int(floor(available / rowHeight)))
+    }
+
+    private var leftHistoryItems: [DictItem] {
+        guard historyFlowsAcrossSpread else { return historyItems }
+        return Array(historyItems.prefix(historyColumnCapacity))
+    }
+
+    private var rightHistoryItems: [DictItem] {
+        guard historyFlowsAcrossSpread else { return historyItems }
+        return Array(historyItems.dropFirst(historyColumnCapacity))
+    }
+
     private func applyHinge(_ snapshot: DuoHingeSnapshot) {
+        if snapshot.phase != .unavailable {
+            sawDuoHinge = true
+        }
         hingePhase = snapshot.phase
         let unfolded = snapshot.phase == .partiallyOpen || snapshot.phase == .fullyOpen
         DuoOrientation.setUnfolded(unfolded)
@@ -354,13 +421,12 @@ struct ContentView: View {
 
     private func browseColumn(onSelect: ((DictItem) -> Void)?) -> some View {
         let fillsPage = onSelect != nil
-        return ZStack {
-                        AppTheme.background.ignoresSafeArea()
-                        VStack(spacing: 0) {
+        let compactColumn = fillsPage || duoSinglePage
+        return VStack(spacing: 0) {
                             VStack(spacing: 0) {
                                 HStack {
                                     Text("重編國語辭典修訂本")
-                                        .font(fillsPage ? .system(size: 22, weight: .bold) : (isPad ? .system(size: 26, weight: .bold) : .headline))
+                                        .font(compactColumn ? .system(size: 22, weight: .bold) : (isPad ? .system(size: 26, weight: .bold) : .headline))
                                         .foregroundColor(.primary)
                                         .lineLimit(1)
                                         .minimumScaleFactor(0.7)
@@ -378,7 +444,7 @@ struct ContentView: View {
                                         Image(systemName: "ellipsis.circle").font(.system(size: 24)).foregroundColor(.primary).padding(8)
                                     }
                                 }
-                                .padding(.horizontal).padding(.top, fillsPage ? 12 : (isPad ? 16 : 8)).padding(.bottom, 8)
+                                .padding(.horizontal).padding(.top, compactColumn ? 12 : (isPad ? 16 : 8)).padding(.bottom, 8)
 
                                 VStack(spacing: 12) {
                                     HStack(spacing: 8) {
@@ -435,43 +501,72 @@ struct ContentView: View {
                                     } else { ResultListView(items: results, onSelect: onSelect) }
                                 } else if selectedTab == 0 {
                                     if historyItems.isEmpty { EmptyStateView(title: "尚無查詢紀錄") }
-                                    else { HistoryListView(items: historyItems, onClear: { DatabaseManager.shared.clearHistory(); loadData() }, onSelect: onSelect) }
+                                    else {
+                                        HistoryListView(
+                                            items: historyFlowsAcrossSpread ? leftHistoryItems : historyItems,
+                                            singleColumn: historyFlowsAcrossSpread,
+                                            onClear: { DatabaseManager.shared.clearHistory(); loadData() },
+                                            onSelect: onSelect
+                                        )
+                                    }
                                 } else {
                                     if favoriteItems.isEmpty { EmptyStateView(title: "尚無收藏單字", icon: "heart.slash") }
                                     else { FavoritesListView(items: favoriteItems, onSelect: onSelect) { loadData() } }
                                 }
                             }
                             .frame(maxWidth: fillsPage ? .infinity : (isPad ? 800 : .infinity)).frame(maxHeight: .infinity)
+                            .background {
+                                GeometryReader { proxy in
+                                    Color.clear
+                                        .onAppear { historyListHeight = proxy.size.height }
+                                        .onChange(of: proxy.size.height) { _, newValue in
+                                            historyListHeight = newValue
+                                        }
+                                }
+                            }
 
                             VStack(spacing: 0) {
-                                if !purchaseManager.isPremium {
+                                if !purchaseManager.isPremium && !compactColumn {
                                     AdBannerView(isLoaded: $adLoaded)
-                                        .frame(height: isPad && !fillsPage ? 90 : 50)
+                                        .frame(height: isPad ? 90 : 50)
                                         .frame(maxWidth: .infinity)
                                         .clipped()
                                         .background(Color(UIColor.systemGray6))
                                 }
                                 if showCustomKeyboard {
-                                    ZhuyinKeyboardView(text: $searchText, compact: fillsPage)
-                                        .frame(height: fillsPage ? spreadKeyboardHeight : keyboardHeight)
-                                        .frame(maxWidth: fillsPage ? .infinity : (isPad ? 640 : .infinity))
-                                        .clipped()
-                                        .background(Color(UIColor.systemGray6))
-                                        .cornerRadius(isPad && !fillsPage ? 16 : 0, corners: [.topLeft, .topRight])
-                                        .shadow(color: isPad && !fillsPage ? .black.opacity(0.1) : .clear, radius: 10, x: 0, y: -5)
-                                        .transition(.move(edge: .bottom)).padding(.bottom, isPad && !fillsPage ? 10 : 0)
+                                    let keyboardHeightForPage = fillsPage ? spreadKeyboardHeight : singlePageKeyboardHeight
+                                    let keyboard = ZhuyinKeyboardView(
+                                        text: $searchText,
+                                        compact: compactColumn,
+                                        expandsFooter: true,
+                                        showsBanner: compactColumn && !purchaseManager.isPremium,
+                                        adLoaded: $adLoaded
+                                    )
+                                    if compactColumn {
+                                        keyboard
+                                            .frame(minHeight: keyboardHeightForPage, idealHeight: keyboardHeightForPage, maxHeight: keyboardHeightForPage)
+                                            .clipped()
+                                    } else {
+                                        keyboard
+                                            .frame(minHeight: keyboardHeight, idealHeight: keyboardHeight, maxHeight: keyboardHeight)
+                                            .frame(maxWidth: isPad ? 640 : .infinity)
+                                            .clipped()
+                                            .cornerRadius(isPad ? 16 : 0, corners: [.topLeft, .topRight])
+                                            .shadow(color: isPad ? .black.opacity(0.1) : .clear, radius: 10, x: 0, y: -5)
+                                            .padding(.bottom, isPad ? 10 : 0)
+                                    }
                                 }
                             }
                             .layoutPriority(2)
                             .frame(maxWidth: .infinity).background(Color(UIColor.systemGray6).ignoresSafeArea(edges: .bottom))
                         }
-                    }
+                    .background(AppTheme.background.ignoresSafeArea())
                     .background {
                         GeometryReader { proxy in
                             Color.clear
-                                .onAppear { browseHeight = proxy.size.height }
-                                .onChange(of: proxy.size.height) { _, newValue in
-                                    browseHeight = newValue
+                                .onAppear { noteBrowseLayout(proxy) }
+                                .onChange(of: proxy.size) { _, _ in
+                                    noteBrowseLayout(proxy)
                                 }
                         }
                     }
@@ -802,18 +897,27 @@ struct FavoritesListView: View {
 
 struct HistoryListView: View {
     let items: [DictItem]
+    var showsHeader = true
+    var singleColumn = false
     let onClear: () -> Void
     var onSelect: ((DictItem) -> Void)? = nil
-    let columns = [GridItem(.adaptive(minimum: 280), spacing: 16)]
+
+    private var columns: [GridItem] {
+        singleColumn ? [GridItem(.flexible(), spacing: 16)] : [GridItem(.adaptive(minimum: 280), spacing: 16)]
+    }
     
     var body: some View {
-        VStack(alignment: .leading) {
-            HStack {
-                Label("最近查詢", systemImage: "clock.arrow.circlepath").font(.headline).foregroundColor(.secondary)
-                Spacer()
-                Button(action: onClear) { Text("清除").font(.caption).foregroundColor(.blue) }
+        VStack(alignment: .leading, spacing: 0) {
+            if showsHeader {
+                HStack {
+                    Label("最近查詢", systemImage: "clock.arrow.circlepath").font(.headline).foregroundColor(.secondary)
+                    Spacer()
+                    Button(action: onClear) { Text("清除").font(.caption).foregroundColor(.blue) }
+                }
+                .padding(.horizontal).padding(.top, 8).padding(.bottom, 8)
+            } else {
+                Color.clear.frame(height: 40)
             }
-            .padding(.horizontal).padding(.top, 8)
             ScrollView {
                 LazyVGrid(columns: columns, spacing: 16) {
                     ForEach(items) { item in
@@ -835,12 +939,11 @@ struct EmptyStateView: View {
     var icon: String = "book.closed.circle.fill"
     
     var body: some View {
-        VStack(spacing: 20) {
-            Spacer()
-            Image(systemName: icon).font(.system(size: 80)).foregroundColor(.gray.opacity(0.2))
+        VStack(spacing: 16) {
+            Image(systemName: icon).font(.system(size: 64)).foregroundColor(.gray.opacity(0.25))
             Text(title).font(.headline).foregroundColor(.secondary)
-            Spacer()
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -1266,6 +1369,9 @@ struct ExpandedCandidatePanel: View {
 struct ZhuyinKeyboardView: View {
     @Binding var text: String
     var compact = false
+    var expandsFooter = true
+    var showsBanner = false
+    @Binding var adLoaded: Bool
     @Environment(\.colorScheme) var colorScheme
     @State private var showExpandedCandidates = false
     @State private var candidates: [String] = []
@@ -1289,12 +1395,10 @@ struct ZhuyinKeyboardView: View {
 
     private var keyHeight: CGFloat { compact ? 30 : (isPad ? 46 : 40) }
     private var candidateHeight: CGFloat { compact ? 34 : 44 }
-    private var toneHeight: CGFloat { compact ? 32 : (isPad ? 44 : 42) }
+    private var zhuyinSize: CGFloat { compact ? 16 : (isPad ? 26 : 20) }
     
     var body: some View {
         ZStack {
-            (colorScheme == .dark ? Color(UIColor.systemGray6) : Color(UIColor.systemGray6)).ignoresSafeArea()
-            
             VStack(spacing: compact ? 2 : (isPad ? 8 : 4)) { // [iPad 優化]: 調整垂直間距
                 
                 // 1. 候選字與拼音顯示列
@@ -1353,22 +1457,37 @@ struct ZhuyinKeyboardView: View {
                             if item.symbol != "ˉ" { text += item.symbol }
                             ZhuyinKeyHaptics.shared.tone()
                         }) {
-                            VStack(spacing: 0) {
-                                Text(item.symbol).font(AppTheme.zhuyinFont(size: compact ? 16 : (isPad ? 24 : 20))).frame(height: compact ? 16 : (isPad ? 26 : 24))
-                                Text(item.name).font(.system(size: compact ? 9 : (isPad ? 11 : 10), weight: .regular)).padding(.bottom, compact ? 0 : 2)
+                            VStack(spacing: -4) {
+                                Text(item.symbol)
+                                    .font(AppTheme.zhuyinFont(size: zhuyinSize, weight: .semibold))
+                                    .baselineOffset(-zhuyinSize * 0.28)
+                                    .lineLimit(1)
+                                    .frame(maxWidth: .infinity, alignment: .center)
+                                    .frame(height: zhuyinSize)
+                                Text(item.name)
+                                    .font(.system(size: compact ? 9 : (isPad ? 11 : 10), weight: .regular))
+                                    .lineLimit(1)
+                                    .frame(maxWidth: .infinity, alignment: .center)
                             }
-                            .foregroundColor(.purple).frame(maxWidth: .infinity).frame(height: toneHeight)
-                            .background(Color.purple.opacity(0.1)).cornerRadius(8)
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.purple.opacity(0.2), lineWidth: 1))
+                            .foregroundColor(.purple)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                            .frame(height: keyHeight)
+                            .background(Color.purple.opacity(0.1))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.purple.opacity(0.2), lineWidth: 1))
                         }
+                        .buttonStyle(.plain)
                     }
                     Button(action: {
                         ZhuyinKeyHaptics.shared.delete(hasCharacter: !text.isEmpty)
                         if !text.isEmpty { text.removeLast() }
                     }) {
                         Image(systemName: "delete.left.fill").font(.system(size: compact ? 16 : (isPad ? 26 : 20))).foregroundColor(.white)
-                            .frame(width: compact ? 44 : (isPad ? 60 : 54), height: toneHeight).background(Color.gray.opacity(0.8)).cornerRadius(8)
+                            .frame(width: compact ? 44 : (isPad ? 60 : 54), height: keyHeight)
+                            .background(Color.gray.opacity(0.8))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
                     }
+                    .buttonStyle(.plain)
                 }
                 .padding(.horizontal, 8)
 
@@ -1389,7 +1508,17 @@ struct ZhuyinKeyboardView: View {
                 .padding(.horizontal, isPad ? 16 : 8)
                 .padding(.bottom, 0)
 
-                Spacer(minLength: 0)
+                if expandsFooter {
+                    Spacer(minLength: 0)
+                }
+
+                if showsBanner {
+                    AdBannerView(isLoaded: $adLoaded)
+                        .frame(minHeight: 50, idealHeight: 50, maxHeight: 50)
+                        .frame(maxWidth: .infinity)
+                        .clipped()
+                        .padding(.bottom, 6)
+                }
                 
                 // 4. 隱私權與 EULA (避免被 Home Indicator 遮擋)
                 HStack(spacing: 16) {
@@ -1409,6 +1538,7 @@ struct ZhuyinKeyboardView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity)).zIndex(100)
             }
         }
+        .background(Color(UIColor.systemGray6).ignoresSafeArea(edges: .bottom))
         .onChange(of: text) { _, _ in updateCandidates() }
         .onAppear {
             updateCandidates()
@@ -1506,25 +1636,20 @@ struct AdBannerView: UIViewRepresentable {
         Coordinator(isLoaded: $isLoaded)
     }
 
-    func makeUIView(context: Context) -> BannerView {
+    func makeUIView(context: Context) -> BannerContainer {
         let adSize = UIDevice.current.userInterfaceIdiom == .pad ? AdSizeLeaderboard : AdSizeBanner
-        let banner = BannerView(adSize: adSize)
-        banner.clipsToBounds = true
-        banner.backgroundColor = .clear
-        banner.adUnitID = Self.adUnitID
-        banner.delegate = context.coordinator
-        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-           let rootVC = windowScene.windows.first?.rootViewController {
-            banner.rootViewController = rootVC
-        }
-        banner.load(Self.nonPersonalizedRequest())
-        return banner
+        let container = BannerContainer(adSize: adSize, adUnitID: Self.adUnitID)
+        container.banner.delegate = context.coordinator
+        return container
     }
 
-    func updateUIView(_ uiView: BannerView, context: Context) {}
+    func updateUIView(_ uiView: BannerContainer, context: Context) {
+        uiView.banner.delegate = context.coordinator
+        uiView.loadIfNeeded()
+    }
 
     /// 不使用廣告識別碼，只請求非個人化廣告。
-    private static func nonPersonalizedRequest() -> Request {
+    fileprivate static func nonPersonalizedRequest() -> Request {
         let request = Request()
         let extras = Extras()
         extras.additionalParameters = ["npa": "1"]
@@ -1547,5 +1672,55 @@ struct AdBannerView: UIViewRepresentable {
             print("⚠️ AdMob 橫幅載入失敗: \(error.localizedDescription)")
             DispatchQueue.main.async { self.isLoaded = false }
         }
+    }
+}
+
+/// 廣告要等進到目前這面螢幕的視窗再載入。折疊換到封面時，不能沿用內頁那個視窗。
+final class BannerContainer: UIView {
+    let banner: BannerView
+    private let adUnitID: String
+    private var loadedWindow: UIWindow?
+
+    init(adSize: AdSize, adUnitID: String) {
+        self.adUnitID = adUnitID
+        banner = BannerView(adSize: adSize)
+        super.init(frame: .zero)
+        clipsToBounds = true
+        backgroundColor = .clear
+        banner.clipsToBounds = true
+        banner.backgroundColor = .clear
+        banner.adUnitID = adUnitID
+        addSubview(banner)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        loadIfNeeded()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let size = banner.adSize.size
+        banner.frame = CGRect(
+            x: max(0, (bounds.width - size.width) / 2),
+            y: max(0, (bounds.height - size.height) / 2),
+            width: size.width,
+            height: size.height
+        )
+        loadIfNeeded()
+    }
+
+    func loadIfNeeded() {
+        guard let window, bounds.width > 1 else { return }
+        guard let root = window.rootViewController else { return }
+        let windowChanged = loadedWindow !== window
+        if banner.rootViewController !== root {
+            banner.rootViewController = root
+        }
+        guard windowChanged else { return }
+        loadedWindow = window
+        banner.load(AdBannerView.nonPersonalizedRequest())
     }
 }
