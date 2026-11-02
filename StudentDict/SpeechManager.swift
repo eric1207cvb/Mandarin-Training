@@ -7,6 +7,17 @@ import Combine
 class SpeechManager: NSObject, AVSpeechSynthesizerDelegate, ObservableObject {
     static let shared = SpeechManager()
     private let synthesizer = AVSpeechSynthesizer()
+    private let selectedVoiceKey = "speech.selectedTaiwaneseVoiceID"
+
+    @Published var selectedVoiceIdentifier: String? = UserDefaults.standard.string(forKey: "speech.selectedTaiwaneseVoiceID") {
+        didSet {
+            if let selectedVoiceIdentifier {
+                UserDefaults.standard.set(selectedVoiceIdentifier, forKey: selectedVoiceKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: selectedVoiceKey)
+            }
+        }
+    }
     
     // 用來標記正在說話，可讓 UI 顯示對應圖示
     @Published var isSpeaking = false
@@ -61,7 +72,7 @@ class SpeechManager: NSObject, AVSpeechSynthesizerDelegate, ObservableObject {
         let utterance = AVSpeechUtterance(attributedString: text)
         
         // 3. 尋找最佳台灣語音
-        if let voice = findBestChineseVoice() {
+        if let voice = selectedChineseVoice {
             utterance.voice = voice
         } else {
             utterance.voice = AVSpeechSynthesisVoice(language: "zh-TW")
@@ -87,14 +98,36 @@ class SpeechManager: NSObject, AVSpeechSynthesizerDelegate, ObservableObject {
     
     /// 已安裝高品質或增強語音時，聽起來會接近真人。基本語音是內建的機械音。
     var hasNaturalVoice: Bool {
-        guard let voice = findBestChineseVoice() else { return false }
+        guard let voice = selectedChineseVoice else { return false }
         return voice.quality == .premium || voice.quality == .enhanced
+    }
+
+    /// iOS 已安裝且可供 App 使用的台灣華語語音。
+    var availableChineseVoices: [AVSpeechSynthesisVoice] {
+        AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language.hasPrefix("zh-TW") }
+            .sorted { rank($0) > rank($1) }
+    }
+
+    var effectiveVoiceIdentifier: String? {
+        selectedChineseVoice?.identifier
+    }
+
+    func selectVoice(identifier: String?) {
+        selectedVoiceIdentifier = identifier
+    }
+
+    private var selectedChineseVoice: AVSpeechSynthesisVoice? {
+        if let selectedVoiceIdentifier,
+           let selected = availableChineseVoices.first(where: { $0.identifier == selectedVoiceIdentifier }) {
+            return selected
+        }
+        return findBestChineseVoice()
     }
 
     // MARK: - 尋找最佳的台灣語音
     private func findBestChineseVoice() -> AVSpeechSynthesisVoice? {
-        let voices = AVSpeechSynthesisVoice.speechVoices().filter { $0.language.hasPrefix("zh-TW") }
-        return voices.max { rank($0) < rank($1) }
+        availableChineseVoices.first
     }
 
     private func rank(_ voice: AVSpeechSynthesisVoice) -> Int {

@@ -158,6 +158,7 @@ struct ContentView: View {
     
     @State private var showLicense = false
     @State private var showPaywall = false
+    @State private var showSpeechVoiceSettings = false
     @State private var showCustomKeyboard = true
     @State private var isLoading = true
     @StateObject private var speechInput = SpeechInputManager()
@@ -169,24 +170,200 @@ struct ContentView: View {
     @State private var showAlert = false
     
     @Environment(\.colorScheme) var colorScheme
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     
     // [工具] 判斷是否為 iPad
     let isPad = UIDevice.current.userInterfaceIdiom == .pad
+    @State private var hingePhase: DuoHingePhase = .unavailable
+    @State private var bookFrost: Double = 0
+    @State private var canvasSize: CGSize = .zero
+    @State private var browseHeight: CGFloat = 0
+    @State private var spreadPath: [DictItem] = []
+    
+    private var usesSpread: Bool {
+        switch hingePhase {
+        case .partiallyOpen, .fullyOpen:
+            return true
+        case .closed, .unavailable:
+            return horizontalSizeClass == .regular && canvasSize.width > canvasSize.height + 40
+        }
+    }
+
+    private var keyboardHeight: CGFloat {
+        if verticalSizeClass == .compact { return 232 }
+        return isPad ? 420 : 360
+    }
+
+    /// 展開後左頁要同時放下標題、至少一張詞卡、廣告和鍵盤，鍵盤改依剩餘高度縮短。
+    private var spreadKeyboardHeight: CGFloat {
+        let adHeight: CGFloat = purchaseManager.isPremium ? 0 : 50
+        let room = browseHeight - 156 - adHeight - 148
+        guard browseHeight > 0 else { return 260 }
+        return min(300, max(220, room))
+    }
     
     var body: some View {
+        readingRoot
+            .background {
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { canvasSize = proxy.size }
+                        .onChange(of: proxy.size) { _, newValue in
+                            canvasSize = newValue
+                        }
+                }
+            }
+            .observingDuoHinge { snapshot in
+                applyHinge(snapshot)
+            }
+            .bookOpenFrost(bookFrost, horizontalFold: canvasSize.height > canvasSize.width)
+    }
+
+    private var readingRoot: some View {
         ZStack {
             if isLoading {
                 LaunchScreenView().transition(.opacity).zIndex(2)
+            } else if usesSpread {
+                spreadReading
             } else {
                 NavigationView {
-                    ZStack {
+                    browseColumn(onSelect: nil)
+                        .navigationTitle("")
+                        .navigationBarHidden(true)
+                }
+                .navigationViewStyle(StackNavigationViewStyle())
+            }
+        }
+        .sheet(isPresented: $showLicense) { LicenseView() }
+        .sheet(isPresented: $showPaywall) { PaywallView(isPresented: $showPaywall) }
+        .sheet(isPresented: $showSpeechVoiceSettings) { SpeechVoiceSettingsView() }
+        .onChange(of: selectedTab) { _ in loadData() }
+        .onChange(of: speechInput.transcribedText) { _, val in if !val.isEmpty { searchText = val } }
+        .onChange(of: searchText) { _, val in performSearch(keyword: val) }
+        .onAppear { loadData() }
+        .alert(isPresented: $showAlert) { Alert(title: Text("提示"), message: Text(alertMessage), dismissButton: .default(Text("好"))) }
+        .overlay {
+            if isPurchasing {
+                ZStack {
+                    Color.black.opacity(0.15).ignoresSafeArea()
+                    ProgressView("正在連線 App Store…")
+                        .padding(20)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
+        }
+        .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { withAnimation { isLoading = false } } }
+    }
+
+    @ViewBuilder
+    private var spreadReading: some View {
+        if #available(iOS 27.1, *) {
+            ArrangementView {
+                browseColumn(onSelect: selectEntry)
+            } secondary: {
+                spreadDetail
+            }
+            .arrangementViewStyle(.split)
+            .splitArrangementLayoutRatio(idealHorizontal: 0.44, idealVertical: 0.46)
+        } else if canvasSize.width >= canvasSize.height {
+            HStack(spacing: 0) {
+                browseColumn(onSelect: selectEntry)
+                Divider()
+                spreadDetail
+            }
+        } else {
+            VStack(spacing: 0) {
+                browseColumn(onSelect: selectEntry)
+                Divider()
+                spreadDetail
+            }
+        }
+    }
+
+    private var spreadDetail: some View {
+        Group {
+            if let item = spreadPath.last {
+                DetailView(
+                    item: item,
+                    fillsPage: true,
+                    onOpenItem: { spreadPath.append($0) },
+                    onFavoriteChange: loadData
+                )
+                .id(item.id)
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    if spreadPath.count > 1 || !historyItems.isEmpty {
+                        HStack {
+                            Button {
+                                if spreadPath.count > 1 {
+                                    spreadPath.removeLast()
+                                } else {
+                                    spreadPath.removeAll()
+                                }
+                            } label: {
+                                Label(spreadPath.count > 1 ? "返回" : "查詢紀錄", systemImage: "chevron.left")
+                            }
+                            Spacer()
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                    }
+                }
+            } else if !historyItems.isEmpty {
+                HistoryListView(
+                    items: historyItems,
+                    onClear: {
+                        DatabaseManager.shared.clearHistory()
+                        spreadPath.removeAll()
+                        loadData()
+                    },
+                    onSelect: selectEntry
+                )
+            } else {
+                OpenDictionaryPage()
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(AppTheme.background)
+        .modifier(DisplayOcclusionPadding(fallbackTop: 88))
+    }
+
+    private func selectEntry(_ item: DictItem) {
+        spreadPath = [item]
+    }
+
+    private func applyHinge(_ snapshot: DuoHingeSnapshot) {
+        hingePhase = snapshot.phase
+        let unfolded = snapshot.phase == .partiallyOpen || snapshot.phase == .fullyOpen
+        DuoOrientation.setUnfolded(unfolded)
+        guard !reduceMotion else {
+            bookFrost = 0
+            return
+        }
+        switch snapshot.phase {
+        case .partiallyOpen:
+            let flat = min(1, max(0, snapshot.radians / .pi))
+            bookFrost = 1 - flat
+        case .fullyOpen:
+            withAnimation(.easeOut(duration: 0.45)) { bookFrost = 0 }
+        case .closed, .unavailable:
+            bookFrost = 0
+        }
+    }
+
+    private func browseColumn(onSelect: ((DictItem) -> Void)?) -> some View {
+        let fillsPage = onSelect != nil
+        return ZStack {
                         AppTheme.background.ignoresSafeArea()
                         VStack(spacing: 0) {
                             VStack(spacing: 0) {
                                 HStack {
                                     Text("重編國語辭典修訂本")
-                                        .font(isPad ? .system(size: 26, weight: .bold) : .headline)
+                                        .font(fillsPage ? .system(size: 22, weight: .bold) : (isPad ? .system(size: 26, weight: .bold) : .headline))
                                         .foregroundColor(.primary)
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.7)
                                     Spacer()
                                     Menu {
                                         if !purchaseManager.isPremium {
@@ -195,12 +372,13 @@ struct ContentView: View {
                                             }
                                         }
                                         Button(action: { restorePurchases() }) { Label("恢復購買", systemImage: "arrow.clockwise") }
+                                        Button(action: { showSpeechVoiceSettings = true }) { Label("語音設定", systemImage: "waveform") }
                                         Button(action: { showLicense = true }) { Label("關於本程式", systemImage: "info.circle") }
                                     } label: {
                                         Image(systemName: "ellipsis.circle").font(.system(size: 24)).foregroundColor(.primary).padding(8)
                                     }
                                 }
-                                .padding(.horizontal).padding(.top, isPad ? 16 : 8).padding(.bottom, 8)
+                                .padding(.horizontal).padding(.top, fillsPage ? 12 : (isPad ? 16 : 8)).padding(.bottom, 8)
 
                                 VStack(spacing: 12) {
                                     HStack(spacing: 8) {
@@ -247,65 +425,56 @@ struct ContentView: View {
                                     Text(speechError).font(.caption).foregroundColor(.red).padding(.bottom, 8)
                                 }
                             }
-                            .frame(maxWidth: isPad ? 680 : .infinity)
+                            .frame(maxWidth: fillsPage ? .infinity : (isPad ? 680 : .infinity))
+                            .layoutPriority(2)
 
                             ZStack {
                                 if !searchText.isEmpty {
                                     if results.isEmpty {
                                         VStack { Spacer(); Text("搜尋中 / 查無結果").foregroundColor(.gray); Spacer() }
-                                    } else { ResultListView(items: results) }
+                                    } else { ResultListView(items: results, onSelect: onSelect) }
                                 } else if selectedTab == 0 {
                                     if historyItems.isEmpty { EmptyStateView(title: "尚無查詢紀錄") }
-                                    else { HistoryListView(items: historyItems, onClear: { DatabaseManager.shared.clearHistory(); loadData() }) }
+                                    else { HistoryListView(items: historyItems, onClear: { DatabaseManager.shared.clearHistory(); loadData() }, onSelect: onSelect) }
                                 } else {
                                     if favoriteItems.isEmpty { EmptyStateView(title: "尚無收藏單字", icon: "heart.slash") }
-                                    else { FavoritesListView(items: favoriteItems) { loadData() } }
+                                    else { FavoritesListView(items: favoriteItems, onSelect: onSelect) { loadData() } }
                                 }
                             }
-                            .frame(maxWidth: isPad ? 800 : .infinity).frame(maxHeight: .infinity)
+                            .frame(maxWidth: fillsPage ? .infinity : (isPad ? 800 : .infinity)).frame(maxHeight: .infinity)
 
                             VStack(spacing: 0) {
                                 if !purchaseManager.isPremium {
                                     AdBannerView(isLoaded: $adLoaded)
-                                        .frame(height: isPad ? 90 : 50)
+                                        .frame(height: isPad && !fillsPage ? 90 : 50)
                                         .frame(maxWidth: .infinity)
+                                        .clipped()
                                         .background(Color(UIColor.systemGray6))
                                 }
                                 if showCustomKeyboard {
-                                    ZhuyinKeyboardView(text: $searchText)
-                                        .frame(height: isPad ? 420 : 360).frame(maxWidth: isPad ? 640 : .infinity)
+                                    ZhuyinKeyboardView(text: $searchText, compact: fillsPage)
+                                        .frame(height: fillsPage ? spreadKeyboardHeight : keyboardHeight)
+                                        .frame(maxWidth: fillsPage ? .infinity : (isPad ? 640 : .infinity))
+                                        .clipped()
                                         .background(Color(UIColor.systemGray6))
-                                        .cornerRadius(isPad ? 16 : 0, corners: [.topLeft, .topRight])
-                                        .shadow(color: isPad ? .black.opacity(0.1) : .clear, radius: 10, x: 0, y: -5)
-                                        .transition(.move(edge: .bottom)).padding(.bottom, isPad ? 10 : 0)
+                                        .cornerRadius(isPad && !fillsPage ? 16 : 0, corners: [.topLeft, .topRight])
+                                        .shadow(color: isPad && !fillsPage ? .black.opacity(0.1) : .clear, radius: 10, x: 0, y: -5)
+                                        .transition(.move(edge: .bottom)).padding(.bottom, isPad && !fillsPage ? 10 : 0)
                                 }
                             }
+                            .layoutPriority(2)
                             .frame(maxWidth: .infinity).background(Color(UIColor.systemGray6).ignoresSafeArea(edges: .bottom))
                         }
                     }
-                    .navigationTitle("").navigationBarHidden(true)
-                    .sheet(isPresented: $showLicense) { LicenseView() }
-                    .sheet(isPresented: $showPaywall) { PaywallView(isPresented: $showPaywall) }
-                    .onChange(of: selectedTab) { _ in loadData() }
-                    .onChange(of: speechInput.transcribedText) { _, val in if !val.isEmpty { searchText = val } }
-                    .onChange(of: searchText) { _, val in performSearch(keyword: val) }
-                    .onAppear { loadData() }
-                    .alert(isPresented: $showAlert) { Alert(title: Text("提示"), message: Text(alertMessage), dismissButton: .default(Text("好"))) }
-                    .overlay {
-                        if isPurchasing {
-                            ZStack {
-                                Color.black.opacity(0.15).ignoresSafeArea()
-                                ProgressView("正在連線 App Store…")
-                                    .padding(20)
-                                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-                            }
+                    .background {
+                        GeometryReader { proxy in
+                            Color.clear
+                                .onAppear { browseHeight = proxy.size.height }
+                                .onChange(of: proxy.size.height) { _, newValue in
+                                    browseHeight = newValue
+                                }
                         }
                     }
-                }
-                .navigationViewStyle(StackNavigationViewStyle())
-            }
-        }
-        .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { withAnimation { isLoading = false } } }
     }
     
     // MARK: - Logic
@@ -354,7 +523,14 @@ struct ContentView: View {
 
 struct DetailView: View {
     let item: DictItem
+    var fillsPage = false
+    var onOpenItem: ((DictItem) -> Void)? = nil
+    var onFavoriteChange: (() -> Void)? = nil
     @State private var isFav: Bool = false
+    @State private var showSpeechVoiceSettings = false
+    @State private var linkedWords: Set<String> = []
+    @State private var crossReferences: [DictItem] = []
+    @State private var openedWord: String?
     @ObservedObject private var speechManager = SpeechManager.shared
     @Environment(\.colorScheme) var colorScheme
     var isSingleChar: Bool { item.word.count == 1 }
@@ -406,21 +582,23 @@ struct DetailView: View {
                             }
                             .padding(.vertical, 10)
                         }
-                        EntryLearningNotes(item: item)
+                        EntryLearningNotes(item: item, crossReferences: crossReferences, onOpenItem: onOpenItem)
                     }
                     .padding(24).background(AppTheme.cardBackground).cornerRadius(24)
                     .shadow(color: AppTheme.shadowColor(colorScheme: colorScheme), radius: 8, x: 0, y: 4)
 
                     VStack(spacing: 8) {
-                        HStack(spacing: 20) {
+                        HStack(spacing: 14) {
                             ActionButton(icon: "speaker.wave.3.fill", text: "唸發音", color: .blue) { speechManager.speak(word: item.word, phonetic: item.phonetic) }
+                            ActionButton(icon: "waveform", text: "選擇語音", color: .purple) { showSpeechVoiceSettings = true }
                             ActionButton(icon: isFav ? "heart.fill" : "heart", text: isFav ? "已收藏" : "收藏", color: isFav ? .red : .gray) {
                                 isFav = DatabaseManager.shared.toggleFavorite(word: item.word)
+                                onFavoriteChange?()
                                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                             }
                         }
                         if !speechManager.hasNaturalVoice {
-                            Text("目前是系統基本語音。到「設定 › 輔助使用 › 朗讀內容 › 聲音」下載繁體中文高品質語音，會更像真人。")
+                            Text("目前使用標準語音。點「選擇語音」可切換或查看 Apple 增強語音下載方式。")
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                                 .multilineTextAlignment(.center)
@@ -432,22 +610,28 @@ struct DetailView: View {
                             Image(systemName: "text.book.closed.fill").foregroundColor(.green)
                             Text("教育部原文釋義").font(.headline).foregroundColor(.secondary)
                             Spacer()
-                        }
-                        .padding(.horizontal, 8)
-                        VStack(alignment: .leading, spacing: 0) { MOESourceTextView(sourceText: item.definition) }
-                            .padding().frame(maxWidth: .infinity, alignment: .leading).background(AppTheme.cardBackground).cornerRadius(16)
-                            .onTapGesture {
+                            Button {
                                 let spoken = MOEText.plain(item.definition)
                                 if !spoken.isEmpty { SpeechManager.shared.speak(spoken) }
-                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            } label: {
+                                Image(systemName: "speaker.wave.2")
                             }
+                            .accessibilityLabel("朗讀釋義")
+                        }
+                        .padding(.horizontal, 8)
+                        VStack(alignment: .leading, spacing: 0) {
+                            MOESourceTextView(sourceText: item.definition, linkedWords: linkedWords) { word in
+                                openRelatedWord(word)
+                            }
+                        }
+                            .padding().frame(maxWidth: .infinity, alignment: .leading).background(AppTheme.cardBackground).cornerRadius(16)
                         if !item.synonyms.isEmpty || !item.antonyms.isEmpty {
                             VStack(alignment: .leading, spacing: 12) {
                                 if !item.synonyms.isEmpty {
-                                    RelatedWordsView(title: "相似詞", systemImage: "arrow.right.circle", words: MOEText.listWords(item.synonyms))
+                                    RelatedWordsView(title: "相似詞", systemImage: "arrow.right.circle", words: MOEText.listWords(item.synonyms), linkedWords: linkedWords, onOpen: openRelatedWord)
                                 }
                                 if !item.antonyms.isEmpty {
-                                    RelatedWordsView(title: "相反詞", systemImage: "arrow.left.circle", words: MOEText.listWords(item.antonyms))
+                                    RelatedWordsView(title: "相反詞", systemImage: "arrow.left.circle", words: MOEText.listWords(item.antonyms), linkedWords: linkedWords, onOpen: openRelatedWord)
                                 }
                             }
                             .padding().frame(maxWidth: .infinity, alignment: .leading)
@@ -458,24 +642,64 @@ struct DetailView: View {
                     }
                     .padding(.bottom, 40)
                 }
-                .padding().padding(.top, 12).frame(maxWidth: isPad ? 720 : .infinity).frame(maxWidth: .infinity)
+                .padding().padding(.top, 12).frame(maxWidth: fillsPage ? .infinity : (isPad ? 720 : .infinity)).frame(maxWidth: .infinity)
             }
             .safeAreaPadding(.top, 8)
         }
-        .onAppear { isFav = DatabaseManager.shared.isFavorite(word: item.word); DatabaseManager.shared.addToHistory(word: item.word) }
+        .sheet(isPresented: $showSpeechVoiceSettings) { SpeechVoiceSettingsView() }
+        .background {
+            if onOpenItem == nil {
+                NavigationLink(isActive: Binding(get: { openedWord != nil }, set: { if !$0 { openedWord = nil } })) {
+                    if let openedWord {
+                        LinkedEntryView(word: openedWord)
+                    } else {
+                        EmptyView()
+                    }
+                } label: {
+                    EmptyView()
+                }
+                .hidden()
+            }
+        }
+        .onAppear {
+            isFav = DatabaseManager.shared.isFavorite(word: item.word)
+            DatabaseManager.shared.addToHistory(word: item.word)
+            prepareRelatedLinks()
+        }
         .onDisappear { SpeechManager.shared.stop() }
+    }
+
+    private func openRelatedWord(_ word: String) {
+        if let onOpenItem, let found = DatabaseManager.shared.lookupExact(word: word) {
+            onOpenItem(found)
+        } else {
+            openedWord = word
+        }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    private func prepareRelatedLinks() {
+        var candidates = MOEText.quotedWords(item.definition)
+        candidates.append(contentsOf: MOEText.listWords(item.synonyms))
+        candidates.append(contentsOf: MOEText.listWords(item.antonyms))
+        candidates.removeAll { $0 == item.word }
+        linkedWords = DatabaseManager.shared.wordsThatExist(candidates)
+        crossReferences = DatabaseManager.shared.lookupEntryIDs(MOEText.crossReferenceIDs(item.pronunciationNote))
+            .filter { $0.id != item.id }
     }
 }
 
 private struct EntryLearningNotes: View {
     let item: DictItem
+    var crossReferences: [DictItem] = []
+    var onOpenItem: ((DictItem) -> Void)? = nil
 
     private var showsVariantBadge: Bool {
         !item.variantCharacters.isEmpty && !item.phonetic.isEmpty
     }
 
     private var hasNotes: Bool {
-        showsVariantBadge || !item.entryAlias.isEmpty || !item.pronunciationNote.isEmpty || !item.variantPhonetic.isEmpty || !item.variantPinyin.isEmpty
+        showsVariantBadge || !item.entryAlias.isEmpty || !item.pronunciationNote.isEmpty || !item.variantPhonetic.isEmpty || !item.variantPinyin.isEmpty || !crossReferences.isEmpty
     }
 
     var body: some View {
@@ -492,6 +716,19 @@ private struct EntryLearningNotes: View {
                         .font(AppTheme.zhuyinFont(size: 15))
                         .foregroundColor(.primary)
                 }
+                ForEach(crossReferences) { target in
+                    if let onOpenItem {
+                        Button {
+                            onOpenItem(target)
+                        } label: {
+                            crossReferenceLabel(target)
+                        }
+                    } else {
+                        NavigationLink(destination: DetailView(item: target)) {
+                            crossReferenceLabel(target)
+                        }
+                    }
+                }
                 if !item.variantPhonetic.isEmpty || !item.variantPinyin.isEmpty {
                     Text("變體讀音：\(item.variantPhonetic) \(item.variantPinyin)")
                         .font(AppTheme.zhuyinFont(size: 15))
@@ -502,6 +739,15 @@ private struct EntryLearningNotes: View {
             .padding(.top, 12)
         }
     }
+
+    private func crossReferenceLabel(_ target: DictItem) -> some View {
+        Label {
+            Text("查看「\(target.word)」\(target.phonetic)")
+                .font(AppTheme.zhuyinFont(size: 15))
+        } icon: {
+            Image(systemName: "link")
+        }
+    }
 }
 
 // ==========================================
@@ -510,13 +756,14 @@ private struct EntryLearningNotes: View {
 
 struct ResultListView: View {
     let items: [DictItem]
-    let columns = [GridItem(.adaptive(minimum: 300), spacing: 16)]
+    var onSelect: ((DictItem) -> Void)? = nil
+    let columns = [GridItem(.adaptive(minimum: 280), spacing: 16)]
     
     var body: some View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: 16) {
                 ForEach(items) { item in
-                    NavigationLink(destination: DetailView(item: item)) { WordCardView(item: item) }.buttonStyle(PlainButtonStyle())
+                    EntryDestination(item: item, onSelect: onSelect) { WordCardView(item: item, showsDisclosure: onSelect == nil) }
                 }
             }
             .padding(.horizontal).padding(.bottom, 20)
@@ -526,8 +773,9 @@ struct ResultListView: View {
 
 struct FavoritesListView: View {
     let items: [DictItem]
+    var onSelect: ((DictItem) -> Void)? = nil
     let onRefresh: () -> Void
-    let columns = [GridItem(.adaptive(minimum: 300), spacing: 16)]
+    let columns = [GridItem(.adaptive(minimum: 280), spacing: 16)]
     
     var body: some View {
         VStack(alignment: .leading) {
@@ -540,11 +788,10 @@ struct FavoritesListView: View {
             ScrollView {
                 LazyVGrid(columns: columns, spacing: 16) {
                     ForEach(items) { item in
-                        NavigationLink(destination: DetailView(item: item).onDisappear(perform: onRefresh)) {
-                            WordCardView(item: item)
+                        EntryDestination(item: item, onSelect: onSelect, onDisappear: onRefresh) {
+                            WordCardView(item: item, showsDisclosure: onSelect == nil)
                                 .overlay(Image(systemName: "heart.fill").foregroundColor(.red).padding(12), alignment: .topTrailing)
                         }
-                        .buttonStyle(PlainButtonStyle())
                     }
                 }
                 .padding(.horizontal).padding(.bottom, 20)
@@ -554,8 +801,10 @@ struct FavoritesListView: View {
 }
 
 struct HistoryListView: View {
-    let items: [DictItem]; let onClear: () -> Void
-    let columns = [GridItem(.adaptive(minimum: 300), spacing: 16)]
+    let items: [DictItem]
+    let onClear: () -> Void
+    var onSelect: ((DictItem) -> Void)? = nil
+    let columns = [GridItem(.adaptive(minimum: 280), spacing: 16)]
     
     var body: some View {
         VStack(alignment: .leading) {
@@ -568,8 +817,7 @@ struct HistoryListView: View {
             ScrollView {
                 LazyVGrid(columns: columns, spacing: 16) {
                     ForEach(items) { item in
-                        NavigationLink(destination: DetailView(item: item)) { WordCardView(item: item) }
-                            .buttonStyle(PlainButtonStyle())
+                        EntryDestination(item: item, onSelect: onSelect) { WordCardView(item: item, showsDisclosure: onSelect == nil) }
                     }
                 }
                 .padding(.horizontal).padding(.bottom, 20)
@@ -647,8 +895,32 @@ struct IdiomBreakdownView: View {
     }
 }
 
+private struct EntryDestination<Label: View>: View {
+    let item: DictItem
+    var onSelect: ((DictItem) -> Void)?
+    var onDisappear: (() -> Void)? = nil
+    @ViewBuilder var label: () -> Label
+
+    var body: some View {
+        if let onSelect {
+            Button {
+                onSelect(item)
+            } label: {
+                label()
+            }
+            .buttonStyle(.plain)
+        } else {
+            NavigationLink(destination: DetailView(item: item).onDisappear { onDisappear?() }) {
+                label()
+            }
+            .buttonStyle(.plain)
+        }
+    }
+}
+
 struct WordCardView: View {
     let item: DictItem
+    var showsDisclosure = true
     @Environment(\.colorScheme) var colorScheme
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
@@ -666,7 +938,9 @@ struct WordCardView: View {
                     .font(.system(size: 16)).foregroundColor(.primary).lineLimit(2).multilineTextAlignment(.leading)
             }
             Spacer()
-            Image(systemName: "chevron.right").foregroundColor(.gray.opacity(0.5)).font(.system(size: 14, weight: .bold)).padding(.top, 12)
+            if showsDisclosure {
+                Image(systemName: "chevron.right").foregroundColor(.gray.opacity(0.5)).font(.system(size: 14, weight: .bold)).padding(.top, 12)
+            }
         }
         .padding(.horizontal, 16).padding(.vertical, 14)
         .frame(minHeight: 120)
@@ -991,6 +1265,7 @@ struct ExpandedCandidatePanel: View {
 
 struct ZhuyinKeyboardView: View {
     @Binding var text: String
+    var compact = false
     @Environment(\.colorScheme) var colorScheme
     @State private var showExpandedCandidates = false
     @State private var candidates: [String] = []
@@ -1009,14 +1284,18 @@ struct ZhuyinKeyboardView: View {
     
     // [iPad 優化]: 稍微放寬間距
     var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: isPad ? 64 : 36), spacing: isPad ? 8 : 5)]
+        [GridItem(.adaptive(minimum: compact ? 30 : (isPad ? 64 : 36)), spacing: compact ? 4 : (isPad ? 8 : 5))]
     }
+
+    private var keyHeight: CGFloat { compact ? 30 : (isPad ? 46 : 40) }
+    private var candidateHeight: CGFloat { compact ? 34 : 44 }
+    private var toneHeight: CGFloat { compact ? 32 : (isPad ? 44 : 42) }
     
     var body: some View {
         ZStack {
             (colorScheme == .dark ? Color(UIColor.systemGray6) : Color(UIColor.systemGray6)).ignoresSafeArea()
             
-            VStack(spacing: isPad ? 8 : 4) { // [iPad 優化]: 調整垂直間距
+            VStack(spacing: compact ? 2 : (isPad ? 8 : 4)) { // [iPad 優化]: 調整垂直間距
                 
                 // 1. 候選字與拼音顯示列
                 ZStack {
@@ -1040,9 +1319,9 @@ struct ZhuyinKeyboardView: View {
                                     Button(action: { selectChar(char) }) {
                                         Text(char)
                                             // 候選字使用系統中文字體，避免教育部楷體缺字造成 fallback 或字形不一致。
-                                            .font(.system(size: isPad ? 28 : 24, weight: .regular, design: .default))
+                                            .font(.system(size: compact ? 20 : (isPad ? 28 : 24), weight: .regular, design: .default))
                                             .foregroundColor(.primary)
-                                            .frame(width: isPad ? 50 : 50, height: isPad ? 44 : 44)
+                                            .frame(width: compact ? 40 : 50, height: candidateHeight)
                                             .background(Color.blue.opacity(0.1)).cornerRadius(10)
                                     }
                                 }
@@ -1055,7 +1334,7 @@ struct ZhuyinKeyboardView: View {
                                             Image(systemName: "chevron.down.circle.fill").font(.title2)
                                             Text("更多").font(.caption2).fontWeight(.bold)
                                         }
-                                        .foregroundColor(.white).frame(width: 50, height: isPad ? 44 : 44).background(Color.orange).cornerRadius(10)
+                                        .foregroundColor(.white).frame(width: compact ? 40 : 50, height: candidateHeight).background(Color.orange).cornerRadius(10)
                                     }
                                 }
                             }
@@ -1063,9 +1342,9 @@ struct ZhuyinKeyboardView: View {
                         }
                     }
                 }
-                .frame(height: isPad ? 56 : 50) // [iPad 優化]: 候選字列增高
+                .frame(height: compact ? 42 : (isPad ? 56 : 50)) // [iPad 優化]: 候選字列增高
                 .padding(.horizontal, 8)
-                .padding(.top, isPad ? 12 : 12)
+                .padding(.top, compact ? 6 : 12)
                 
                 // 2. 聲調列
                 HStack(spacing: 6) {
@@ -1075,10 +1354,10 @@ struct ZhuyinKeyboardView: View {
                             ZhuyinKeyHaptics.shared.tone()
                         }) {
                             VStack(spacing: 0) {
-                                Text(item.symbol).font(AppTheme.zhuyinFont(size: isPad ? 24 : 20)).frame(height: isPad ? 26 : 24)
-                                Text(item.name).font(.system(size: isPad ? 11 : 10, weight: .regular)).padding(.bottom, 2)
+                                Text(item.symbol).font(AppTheme.zhuyinFont(size: compact ? 16 : (isPad ? 24 : 20))).frame(height: compact ? 16 : (isPad ? 26 : 24))
+                                Text(item.name).font(.system(size: compact ? 9 : (isPad ? 11 : 10), weight: .regular)).padding(.bottom, compact ? 0 : 2)
                             }
-                            .foregroundColor(.purple).frame(maxWidth: .infinity).frame(height: isPad ? 44 : 42)
+                            .foregroundColor(.purple).frame(maxWidth: .infinity).frame(height: toneHeight)
                             .background(Color.purple.opacity(0.1)).cornerRadius(8)
                             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.purple.opacity(0.2), lineWidth: 1))
                         }
@@ -1087,21 +1366,21 @@ struct ZhuyinKeyboardView: View {
                         ZhuyinKeyHaptics.shared.delete(hasCharacter: !text.isEmpty)
                         if !text.isEmpty { text.removeLast() }
                     }) {
-                        Image(systemName: "delete.left.fill").font(.system(size: isPad ? 26 : 20)).foregroundColor(.white)
-                            .frame(width: isPad ? 60 : 54, height: isPad ? 44 : 42).background(Color.gray.opacity(0.8)).cornerRadius(8)
+                        Image(systemName: "delete.left.fill").font(.system(size: compact ? 16 : (isPad ? 26 : 20))).foregroundColor(.white)
+                            .frame(width: compact ? 44 : (isPad ? 60 : 54), height: toneHeight).background(Color.gray.opacity(0.8)).cornerRadius(8)
                     }
                 }
                 .padding(.horizontal, 8)
 
                 // 3. 注音鍵盤區
-                LazyVGrid(columns: columns, spacing: isPad ? 8 : 6) { // [iPad 優化]: 間距
+                LazyVGrid(columns: columns, spacing: compact ? 3 : (isPad ? 8 : 6)) { // [iPad 優化]: 間距
                     ForEach(gridBopomofo, id: \.self) { char in
                         Button(action: {
                             ZhuyinKeyHaptics.shared.bopomofo(char)
                             text += char
                         }) {
-                            Text(char).font(AppTheme.zhuyinFont(size: isPad ? 26 : 20)).foregroundColor(getTextColor(for: char))
-                                .frame(minWidth: isPad ? 48 : 32, minHeight: isPad ? 46 : 40).frame(maxWidth: .infinity)
+                            Text(char).font(AppTheme.zhuyinFont(size: compact ? 16 : (isPad ? 26 : 20))).foregroundColor(getTextColor(for: char))
+                                .frame(minWidth: compact ? 28 : (isPad ? 48 : 32), minHeight: keyHeight).frame(maxWidth: .infinity)
                                 .background(colorScheme == .dark ? Color.white.opacity(0.15) : Color.white).cornerRadius(6)
                                 .shadow(color: .black.opacity(colorScheme == .dark ? 0 : 0.1), radius: 1, x: 0, y: 1)
                         }
@@ -1121,7 +1400,7 @@ struct ZhuyinKeyboardView: View {
                 .font(.caption2)
                 .foregroundColor(.gray)
                 // [Version Update]: iPad 底部增加 Padding 至 40
-                .padding(.bottom, isPad ? 40 : 20)
+                .padding(.bottom, compact ? 4 : (isPad ? 40 : 20))
                 .layoutPriority(1)
             }
             
@@ -1230,6 +1509,8 @@ struct AdBannerView: UIViewRepresentable {
     func makeUIView(context: Context) -> BannerView {
         let adSize = UIDevice.current.userInterfaceIdiom == .pad ? AdSizeLeaderboard : AdSizeBanner
         let banner = BannerView(adSize: adSize)
+        banner.clipsToBounds = true
+        banner.backgroundColor = .clear
         banner.adUnitID = Self.adUnitID
         banner.delegate = context.coordinator
         if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,

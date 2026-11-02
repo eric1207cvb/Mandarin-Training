@@ -28,6 +28,7 @@ struct DictItem: Identifiable, Hashable {
 class DatabaseManager {
     static let shared = DatabaseManager()
     private var db: OpaquePointer?
+    private var headwords: Set<String>?
     
     // 設定最大收藏數量
     private let maxFavoritesCount = 30
@@ -40,6 +41,7 @@ class DatabaseManager {
         openDatabase()
         createTables()
         migrateDictionaryIfNeeded()
+        ensureSearchIndexes()
     }
     
     // MARK: - Database Setup (關鍵修正：複製到可寫入目錄)
@@ -154,6 +156,7 @@ class DatabaseManager {
                 definition, pronunciation_note, variant_characters
             FROM bundled_dictionary.dict_mini;
             CREATE INDEX IF NOT EXISTS idx_dict_word ON dict_mini(word);
+            CREATE INDEX IF NOT EXISTS idx_dict_entry_id ON dict_mini(entry_id);
             CREATE INDEX IF NOT EXISTS idx_dict_phonetic ON dict_mini(phonetic);
             CREATE INDEX IF NOT EXISTS idx_dict_pinyin ON dict_mini(pinyin);
             CREATE INDEX IF NOT EXISTS idx_dict_word_length ON dict_mini(word, word_length);
@@ -177,6 +180,13 @@ class DatabaseManager {
         } else {
             print("✅ 已切換至教育部《重編國語辭典修訂本》資料")
         }
+    }
+
+    /// 已安裝的舊資料庫不會重跑匯入，這裡補上詞條連結需要的索引。
+    private func ensureSearchIndexes() {
+        guard let db = db else { return }
+        sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_dict_word ON dict_mini(word);", nil, nil, nil)
+        sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_dict_entry_id ON dict_mini(entry_id);", nil, nil, nil)
     }
     
     // MARK: - 🔍 主搜尋 (字典邏輯：僅限字首匹配 + 權重排序)
@@ -251,7 +261,7 @@ class DatabaseManager {
         return rawResults
     }
 
-    /// 相似詞、相反詞點進去時，取這個字詞的第一筆讀音。
+    /// 相似詞、相反詞或釋義裡的詞，取這個字詞的第一筆讀音。
     func lookupExact(word: String) -> DictItem? {
         guard let db = db else { return nil }
         let sql = """
@@ -271,6 +281,62 @@ class DatabaseManager {
         }
         sqlite3_finalize(stmt)
         return item
+    }
+
+    /// 多音參見訊息裡的字詞號。依傳入順序回傳，略過找不到的編號。
+    func lookupEntryIDs(_ entryIDs: [String]) -> [DictItem] {
+        let unique = entryIDs.filter { !$0.isEmpty }
+        guard let db = db, !unique.isEmpty else { return [] }
+        var found: [String: DictItem] = [:]
+        let placeholders = Array(repeating: "?", count: unique.count).joined(separator: ",")
+        let sql = """
+            SELECT \(dictionaryColumns)
+            FROM dict_mini
+            WHERE entry_id IN (\(placeholders))
+            ORDER BY pronunciation_order ASC;
+        """
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            for (offset, entryID) in unique.enumerated() {
+                bindText(stmt, index: Int32(offset + 1), value: entryID)
+            }
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let item = parseRow(stmt: stmt)
+                if found[item.entryID] == nil {
+                    found[item.entryID] = item
+                }
+            }
+        }
+        sqlite3_finalize(stmt)
+        return unique.compactMap { found[$0] }
+    }
+
+    /// 這批字詞裡，哪些真的有獨立詞條。詞目表只讀一次，之後在記憶體比對。
+    func wordsThatExist(_ words: [String]) -> Set<String> {
+        let known = loadHeadwords()
+        return Set(words.compactMap { word -> String? in
+            let trimmed = word.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, trimmed.count <= 18, known.contains(trimmed) else { return nil }
+            return trimmed
+        })
+    }
+
+    private func loadHeadwords() -> Set<String> {
+        if let headwords { return headwords }
+        var found = Set<String>()
+        found.reserveCapacity(170_000)
+        guard let db = db else { return found }
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, "SELECT DISTINCT word FROM dict_mini;", -1, &stmt, nil) == SQLITE_OK {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let pointer = sqlite3_column_text(stmt, 0) {
+                    found.insert(String(cString: pointer))
+                }
+            }
+        }
+        sqlite3_finalize(stmt)
+        headwords = found
+        return found
     }
 
     /// 前綴的不含上界。U+10FFFF 是最大字元，接在前綴後面可涵蓋所有更長的字。

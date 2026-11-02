@@ -138,6 +138,7 @@ def build_database(source: Path, output: Path) -> tuple[int, int]:
             total += 1
 
         connection.execute("CREATE INDEX idx_dict_word ON dict_mini(word)")
+        connection.execute("CREATE INDEX idx_dict_entry_id ON dict_mini(entry_id)")
         connection.execute("CREATE INDEX idx_dict_phonetic ON dict_mini(phonetic)")
         connection.execute("CREATE INDEX idx_dict_pinyin ON dict_mini(pinyin)")
         connection.execute("CREATE INDEX idx_dict_word_length ON dict_mini(word, word_length)")

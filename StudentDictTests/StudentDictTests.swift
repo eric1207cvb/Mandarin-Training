@@ -30,6 +30,24 @@ struct StudentDictTests {
         #expect(items[0].example == nil)
     }
 
+    @Test func quotedWordsFindsDictionaryTermsAndSkipsLongSentences() {
+        let source = "參見「喇叭」條。如：「把橘子扒開來吃。」也作『芭蕉』。俗呼瘡痕曰：『疤』。"
+        let words = MOEText.quotedWords(source)
+
+        #expect(words.contains("喇叭"))
+        #expect(words.contains("芭蕉"))
+        #expect(words.contains("疤"))
+        #expect(!words.contains { $0.contains("橘子") })
+    }
+
+    @Test func quotedWordsSplitsAListOfShortHeadwords() {
+        #expect(MOEText.quotedWords("如：「士、農、工、商」。") == ["士", "農", "工", "商"])
+    }
+
+    @Test func crossReferenceIDReadsEveryEntryNumber() {
+        #expect(MOEText.crossReferenceIDs("(二)ㄅㄚˋ bà（00026）(三)ㄅㄞˇ bǎi（00137）") == ["00026", "00137"])
+    }
+
     @Test func bopomofoSplitterReturnsOnePartPerCharacter() {
         #expect(BopomofoSplitter.split(phonetic: "ㄓ ㄨ ㄥ", count: 3) == ["ㄓ", "ㄨ", "ㄥ"])
         #expect(BopomofoSplitter.split(phonetic: "ㄓ ㄨ", count: 3) == ["ㄓ", "ㄨ", ""])

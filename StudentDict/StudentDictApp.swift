@@ -38,9 +38,9 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     // 🌟 核心功能：針對裝置鎖定方向
     func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
         
-        // 如果是 iPhone -> 只允許直向 (Portrait)
+        // 一般 iPhone 只允許直向。iPhone Duo 展開後改由鉸鏈狀態開放橫向。
         if UIDevice.current.userInterfaceIdiom == .phone {
-            return .portrait
+            return DuoOrientation.unfolded ? .allButUpsideDown : .portrait
         }
         
         // 如果是 iPad -> 允許所有方向 (直/橫)
